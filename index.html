@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -219,6 +220,45 @@
   }
   .copy-btn.empty:hover{background:transparent; color:var(--muted);}
 
+  .platform-tag{
+    flex:none;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:10px;
+    font-weight:500;
+    letter-spacing:.02em;
+    padding:3px 7px;
+    border-radius:3px;
+    color:#fff;
+    white-space:nowrap;
+  }
+  .platform-tag.ig-post{background:#b34a86;}
+  .platform-tag.ig-reel{background:#8a3f9c;}
+  .platform-tag.yt-short{background:#c4341f;}
+  .platform-tag.yt-video{background:#a12a17;}
+
+  /* ---------- toast ---------- */
+  #toast{
+    position:fixed;
+    left:50%;
+    bottom:28px;
+    transform:translateX(-50%) translateY(12px);
+    background:var(--pine-deep);
+    color:#fff;
+    font-family:'IBM Plex Mono',monospace;
+    font-size:13px;
+    padding:10px 18px;
+    border-radius:999px;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .18s, transform .18s;
+    box-shadow:0 6px 18px rgba(0,0,0,.18);
+    z-index:10;
+  }
+  #toast.show{
+    opacity:1;
+    transform:translateX(-50%) translateY(0);
+  }
+
   /* ---------- states ---------- */
   .state-box{
     background:var(--surface);
@@ -280,6 +320,8 @@
   <div id="results"></div>
 </div>
 
+<div id="toast"></div>
+
 <script>
 (function(){
   var SHEET_ID = "1XwkaYRSctgUlaVDsFHk46BNTiZf7TDgyIMLsn018sU4";
@@ -296,6 +338,15 @@
   var allData = [];
   var mode = 'and';
   var debounceTimer = null;
+
+  // Which sheet columns to show, in order, each with a display label,
+  // a short tag, and a css class so the platform is unmistakable at a glance.
+  var FIELDS = [
+    { key: 'InstagramPost',  label: 'Instagram Post', tag: 'IG POST',  cls: 'ig-post'  },
+    { key: 'InstagramVideo', label: 'Instagram Reel', tag: 'IG REEL',  cls: 'ig-reel'  },
+    { key: 'YouTubeShort',   label: 'YouTube Short',  tag: 'YT SHORT', cls: 'yt-short' },
+    { key: 'YouTubeVideo',   label: 'YouTube Video',  tag: 'YT VIDEO', cls: 'yt-video' }
+  ];
 
   function clean(str){
     return (str || '').toString().replace(/\s+/g, ' ').trim();
@@ -399,40 +450,46 @@
 
     resultsEl.innerHTML = filtered.map(function(row, idx){
       var city = clean(row.City) || 'Untitled';
-      var pageLabel = clean(row.PageHead) || 'Page link';
-      var roomLabel = clean(row.RoomHeaad || row.RoomHead) || 'Room link';
-      var pageUrl = clean(row.Page);
-      var roomUrl = clean(row.Room);
+      var rows = FIELDS.map(function(f){
+        return linkRow(idx, f, clean(row[f.key]));
+      }).join('');
 
       return (
         '<div class="entry">' +
           '<div class="entry-city">' + highlight(city, tokens) + '</div>' +
-          '<div class="link-list">' +
-            linkRow(idx, 'page', pageLabel, pageUrl) +
-            linkRow(idx, 'room', roomLabel, roomUrl) +
-          '</div>' +
+          '<div class="link-list">' + rows + '</div>' +
         '</div>'
       );
     }).join('');
   }
 
-  function linkRow(idx, kind, label, url){
+  function linkRow(idx, field, url){
     var hasUrl = !!url;
     var display = hasUrl ? url : 'not provided';
     return (
       '<div class="link-row">' +
+        '<span class="platform-tag ' + field.cls + '">' + field.tag + '</span>' +
         '<div class="link-meta">' +
-          '<div class="link-label">' + escapeHtml(label.toUpperCase()) + '</div>' +
+          '<div class="link-label">' + escapeHtml(field.label.toUpperCase()) + '</div>' +
           '<div class="link-url">' + escapeHtml(display) + '</div>' +
         '</div>' +
         '<button class="copy-btn' + (hasUrl ? '' : ' empty') + '" ' +
-          'data-idx="' + idx + '" data-kind="' + kind + '" ' +
+          'data-idx="' + idx + '" data-key="' + field.key + '" data-label="' + escapeHtml(field.label) + '" ' +
           (hasUrl ? '' : 'disabled') + '>copy</button>' +
       '</div>'
     );
   }
 
-  async function copyText(text, btn){
+  var toastEl = document.getElementById('toast');
+  var toastTimer = null;
+  function showToast(text){
+    toastEl.textContent = text;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function(){ toastEl.classList.remove('show'); }, 1800);
+  }
+
+  async function copyText(text, btn, label, city){
     try{
       if(navigator.clipboard && window.isSecureContext){
         await navigator.clipboard.writeText(text);
@@ -449,6 +506,7 @@
       var original = btn.textContent;
       btn.textContent = 'copied ✓';
       btn.classList.add('copied');
+      showToast('Copied ' + city + ' — ' + label + ' link');
       setTimeout(function(){
         btn.textContent = original;
         btn.classList.remove('copied');
@@ -459,11 +517,7 @@
     }
   }
 
-  resultsEl.addEventListener('click', function(e){
-    var btn = e.target.closest('.copy-btn');
-    if(!btn || btn.disabled) return;
-    var idx = Number(btn.getAttribute('data-idx'));
-    var kind = btn.getAttribute('data-kind');
+  function currentFiltered(){
     var q = clean(searchEl.value);
     var tokens = q.toLowerCase().split(/\s+/).filter(Boolean);
     var filtered = allData.filter(function(row){ return matches(clean(row.City), tokens); });
@@ -473,10 +527,19 @@
       if(ra !== rb) return ra - rb;
       return clean(a.City).localeCompare(clean(b.City));
     });
-    var row = filtered[idx];
+    return filtered;
+  }
+
+  resultsEl.addEventListener('click', function(e){
+    var btn = e.target.closest('.copy-btn');
+    if(!btn || btn.disabled) return;
+    var idx = Number(btn.getAttribute('data-idx'));
+    var key = btn.getAttribute('data-key');
+    var label = btn.getAttribute('data-label');
+    var row = currentFiltered()[idx];
     if(!row) return;
-    var url = kind === 'page' ? clean(row.Page) : clean(row.Room);
-    if(url) copyText(url, btn);
+    var url = clean(row[key]);
+    if(url) copyText(url, btn, label, clean(row.City));
   });
 
   searchEl.addEventListener('input', function(){
